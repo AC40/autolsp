@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+target/
+.tools/
+.cache/
+*.log
+autolsp.local.json
+.vscode-test/
+*.vsix
