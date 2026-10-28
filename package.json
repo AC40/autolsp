@@ -1,6 +1,6 @@
 {
   "name": "autolsp",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "displayName": "AutoLSP — Jev Completions",
   "publisher": "autolsp-local",
   "private": true,
@@ -355,6 +355,12 @@
           "description": "Files matching these globs are excluded from suggestions, edit history, and context.",
           "scope": "language-overridable"
         },
+        "autolsp.auto.requireReversible": {
+          "default": true,
+          "type": "boolean",
+          "description": "Require completions that support full Backspace rollback. Disable to allow provider commands, additional edits, snippets, and broader replacements; those completions use normal Undo instead.",
+          "scope": "language-overridable"
+        },
         "autolsp.auto.minScore": {
           "default": 0.95,
           "type": "number",
@@ -425,7 +431,7 @@
         "autolsp.inline.snippets": {
           "default": true,
           "type": "boolean",
-          "description": "Allow snippet suggestions in inline mode. Auto mode always skips snippets.",
+          "description": "Allow snippet suggestions in inline mode. For automatic snippets, disable auto.requireReversible.",
           "scope": "language-overridable"
         },
         "autolsp.inline.fallbackToLsp": {
@@ -435,11 +441,11 @@
           "scope": "language-overridable"
         },
         "autolsp.completion.resolveCount": {
-          "default": 0,
+          "default": 20,
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991,
-          "description": "Resolve this many provider items before applying them; 0 resolves all. Items beyond a positive limit are ranked but not applied through AutoLSP.",
+          "description": "Resolve up to this many provider items; 0 resolves all and can be slow. Unresolved items require supported deferred acceptance or must be plain TypeScript/JavaScript keywords.",
           "scope": "language-overridable"
         },
         "autolsp.completion.providerTimeoutMs": {

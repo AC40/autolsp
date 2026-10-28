@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import type { AutoLsp } from '../../extension/extension.js';
 import { excluded } from '../../extension/context.js';
 import { configSchema } from '../../core/config.js';
+import { run as testCompletions } from './completions.js';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function eventually(predicate: () => boolean, timeout = 5000) {
@@ -13,8 +14,15 @@ async function eventually(predicate: () => boolean, timeout = 5000) {
 }
 
 export async function run(): Promise<void> {
+  await testCompletions();
   let requestDelay = 0;
+  let bestScore = 0.999;
+  let otherScore = 0.01;
+  let winningLabels = ['return', 'else'];
   let needsImport = false;
+  let needsCommand = false;
+  let needsSnippet = false;
+  let commandCalls = 0;
   const bodies: any[] = [];
   const server = createServer(async (request, response) => {
     let text = '';
@@ -23,7 +31,7 @@ export async function run(): Promise<void> {
     bodies.push(body);
     await sleep(requestDelay);
     response.end(JSON.stringify({ answers: Object.fromEntries(body.state.candidates.map((item: any, index: number) =>
-      [`c${index}`, { type: 'noul', noul: item.label === 'return' ? 0.999 : 0.01 }])) }));
+      [`c${index}`, { type: 'noul', noul: winningLabels.includes(item.label) ? bestScore : otherScore }])) }));
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const settings = vscode.workspace.getConfiguration('autolsp');
@@ -33,6 +41,10 @@ export async function run(): Promise<void> {
       return ['retry', 'return', 'retrieve'].map(label => {
         const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Keyword);
         item.range = document.getWordRangeAtPosition(position) ?? new vscode.Range(position, position);
+        if (label === 'return') {
+          if (needsCommand) item.command = { command: 'autolsp.testAutoCommand', title: 'Test acceptance', arguments: [42] };
+          if (needsSnippet) item.insertText = new vscode.SnippetString('return ${1:value}$0');
+        }
         return item;
       });
     },
@@ -43,7 +55,16 @@ export async function run(): Promise<void> {
       return item;
     },
   });
+  const acceptance = vscode.commands.registerCommand('autolsp.testAutoCommand', (argument: number) => {
+    assert.equal(argument, 42);
+    assert.ok(vscode.window.activeTextEditor!.document.getText().endsWith('return'));
+    commandCalls++;
+  });
   try {
+    await set('auto.requireReversible', true);
+    await set('enabled', true);
+    await set('ranking.enabled', true);
+    await set('completion.resolveCount', 0);
     await set('endpoint', `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/systemone`);
     await set('excludedLanguages', []);
     await set('ranking.debounceMs', 0);
@@ -105,6 +126,18 @@ export async function run(): Promise<void> {
     assert.equal(document.getText(), 'ret', 'Rollback must not retrigger insertion');
     console.log('PASS auto insertion and full Backspace-command rollback');
 
+    await set('ranking.cacheEntries', 0);
+    bestScore = 0.94;
+    await replace('ret');
+    assert.equal(await api.autoInsert(), false);
+    assert.equal(document.getText(), 'ret');
+    assert.equal(api.autoInsertionStatus, 'Best score 0.940 is below auto.minScore 0.95.');
+    bestScore = 0.999; otherScore = 0.9;
+    assert.equal(await api.autoInsert(), false);
+    assert.match(api.autoInsertionStatus, /Score lead 0\.099 is below auto.minMargin 0\.2/);
+    otherScore = 0.01;
+    console.log('PASS rejected ranking scores explain why automatic insertion was skipped');
+
     await replace('re');
     await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
     await vscode.commands.executeCommand('type', { text: 't' });
@@ -139,6 +172,29 @@ export async function run(): Promise<void> {
     await set('completion.resolveCount', 0);
     console.log('PASS completion resolution and additional-edit restrictions');
 
+    needsCommand = true;
+    await replace('ret');
+    assert.equal(await api.autoInsert(), false, 'Default mode still rejects provider commands');
+    assert.equal(commandCalls, 0);
+    await set('auto.requireReversible', false);
+    await replace('ret');
+    assert.equal(await api.autoInsert(), true, 'Opt-in mode must accept command-bearing completions');
+    assert.equal(document.getText(), 'return');
+    assert.equal(commandCalls, 1, 'The provider command runs once, after insertion');
+    await vscode.commands.executeCommand('autolsp.undoInsertion');
+    assert.equal(document.getText(), 'retur', 'Non-reversible completions use normal Backspace, not full rollback');
+    needsCommand = false;
+    needsImport = true;
+    needsSnippet = true;
+    await replace('// fixture\nret');
+    assert.equal(await api.autoInsert(), true, 'Opt-in mode applies snippets and import edits');
+    assert.equal(document.getText(), 'import something;\n// fixture\nreturn value');
+    await vscode.commands.executeCommand('undo');
+    await eventually(() => document.getText() === '// fixture\nret');
+    needsImport = false; needsSnippet = false;
+    await set('auto.requireReversible', true);
+    console.log('PASS configurable provider commands, snippet/import edits, and native Undo');
+
     // A normal edit invalidates the special Backspace action; it becomes deleteLeft.
     await replace('ret');
     assert.equal(await api.autoInsert(), true);
@@ -158,10 +214,51 @@ export async function run(): Promise<void> {
     assert.equal(api.settings(document).mode, 'auto');
     await scoped.update('mode', undefined, vscode.ConfigurationTarget.Global, true);
     console.log('PASS exclusions and per-language mode customization');
+
+    await set('completion.resolveCount', undefined);
+    const typescript = await vscode.workspace.openTextDocument({ language: 'typescript',
+      content: 'const foo = async () => {\n  if (true) {\n  } e' });
+    const tsEditor = await vscode.window.showTextDocument(typescript);
+    const tsEnd = typescript.positionAt(typescript.getText().length);
+    tsEditor.selection = new vscode.Selection(tsEnd, tsEnd);
+    await sleep(150);
+    await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+    await vscode.commands.executeCommand('type', { text: 'l' });
+    await eventually(() => typescript.getText().endsWith('else'));
+    await vscode.commands.executeCommand('autolsp.undoInsertion');
+    assert.ok(typescript.getText().endsWith('el'), 'Backspace restores the typed TypeScript prefix');
+    await sleep(200);
+    assert.ok(typescript.getText().endsWith('el'), 'Rollback must not retrigger TypeScript insertion');
+    console.log('PASS real TypeScript typing → auto-insert else → Backspace rollback');
+
+    await set('auto.kinds', []);
+    requestDelay = 200;
+    for (const [content, expected] of [
+      ['const t = () => {};\nt.app', 'apply'],
+      ['function greetUser() {}\ngreetU', 'greetUser'],
+      ['const resultValue = 42;\nresultV', 'resultValue'],
+    ]) {
+      winningLabels = [expected];
+      const doc = await vscode.workspace.openTextDocument({ language: 'typescript', content });
+      const editor = await vscode.window.showTextDocument(doc);
+      const position = doc.positionAt(content.length);
+      editor.selection = new vscode.Selection(position, position);
+      await set('auto.requireReversible', true);
+      await sleep(150);
+      assert.equal(await api.autoInsert(), false, 'Strict mode rejects TypeScript provider commands');
+      await set('auto.requireReversible', false);
+      await sleep(150);
+      assert.equal(await api.autoInsert(), true, `Opt-in mode must insert TypeScript ${expected}`);
+      assert.ok(doc.getText().endsWith(expected));
+      assert.match(api.autoInsertionStatus, /Inserted provider completion/);
+      console.log(`PASS real TypeScript ${expected} automatic insertion and acceptance command`);
+    }
+    await set('auto.requireReversible', true);
+    await set('auto.kinds', undefined);
     token.dispose();
     console.log('AutoLSP extension-host tests passed.');
   } finally {
-    provider.dispose(); server.closeAllConnections(); server.close();
+    acceptance.dispose(); provider.dispose(); server.closeAllConnections(); server.close();
     await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
   }
 }

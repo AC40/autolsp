@@ -29,9 +29,22 @@ export function inverse(receipt: Receipt): Insertion {
 
 export function isAutoEligible(kind: string, text: string, prefix: string,
   score: number | undefined, nextScore: number | undefined,
-  config: { kinds: string[]; minScore: number; minMargin: number; minPrefixLength: number; maxInsertChars: number }): boolean {
-  return score !== undefined && score >= config.minScore && score - (nextScore ?? 0) >= config.minMargin
-    && (config.kinds.length === 0 || config.kinds.includes(kind))
-    && prefix.length >= config.minPrefixLength && text.startsWith(prefix)
-    && text.length > prefix.length && text.length <= config.maxInsertChars && !/[\r\n]/.test(text);
+  config: { kinds: string[]; minScore: number; minMargin: number; minPrefixLength: number; maxInsertChars: number; requireReversible?: boolean }): boolean {
+  return autoIneligibilityReason(kind, text, prefix, score, nextScore, config) === undefined;
+}
+
+export function autoIneligibilityReason(kind: string, text: string, prefix: string,
+  score: number | undefined, nextScore: number | undefined,
+  config: { kinds: string[]; minScore: number; minMargin: number; minPrefixLength: number; maxInsertChars: number; requireReversible?: boolean }): string | undefined {
+  if (score === undefined) return 'The best candidate has no Jev score.';
+  if (score < config.minScore) return `Best score ${score.toFixed(3)} is below auto.minScore ${config.minScore}.`;
+  const margin = score - (nextScore ?? 0);
+  if (margin < config.minMargin) return `Score lead ${margin.toFixed(3)} is below auto.minMargin ${config.minMargin} (best ${score.toFixed(3)}, next ${(nextScore ?? 0).toFixed(3)}).`;
+  if (config.kinds.length && !config.kinds.includes(kind)) return `Completion kind ${kind} is excluded by auto.kinds.`;
+  if (prefix.length < config.minPrefixLength) return `Prefix length ${prefix.length} is below auto.minPrefixLength ${config.minPrefixLength}.`;
+  if (!text.startsWith(prefix)) return 'The candidate does not extend the typed prefix.';
+  if (text.length <= prefix.length) return 'The candidate adds no text.';
+  if (text.length > config.maxInsertChars) return `Insertion length ${text.length} exceeds auto.maxInsertChars ${config.maxInsertChars}.`;
+  if (config.requireReversible !== false && /[\r\n]/.test(text)) return 'Automatic insertion excludes multiline text.';
+  return undefined;
 }

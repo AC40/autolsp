@@ -29,6 +29,7 @@ export const contextSchema = z.strictObject({
   excludeGlobs: z.array(z.string()).default(['**/.env', '**/.env.*', '**/*.pem', '**/*.key']),
 });
 export const autoSchema = z.strictObject({
+  requireReversible: z.boolean().default(true),
   minScore: probability.default(0.95),
   minMargin: probability.default(0.2),
   kinds: z.array(z.string()).default(['Keyword']),
@@ -43,7 +44,7 @@ export const inlineSchema = z.strictObject({
   fallbackToLsp: z.boolean().default(true),
 });
 export const completionSchema = z.strictObject({
-  resolveCount: z.number().int().min(0).default(0),
+  resolveCount: z.number().int().min(0).default(20),
   providerTimeoutMs: z.number().int().min(100).max(30000).default(1500),
   includeKinds: z.array(z.string()).default([]),
   excludeLabels: z.array(z.string()).default([]),
